@@ -21,10 +21,14 @@
   "dependencies": {
     "@elizaos/core": "0.1.7",
     "agent-twitter-client": "0.0.18",
+    "character": "file:../character",
     "glob": "11.0.0",
-    "zod": "3.23.8"
+    "meme-coin-launchpad": "file:../meme-coin-launchpad",
+    "zod": "3.23.8",
+    "openai": "4.73.0"
   },
   "devDependencies": {
+    "@types/node": "^22.12.0",
     "tsup": "8.3.5"
   },
   "scripts": {

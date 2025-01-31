@@ -1,0 +1,1 @@
+export { publishNewAsset } from "./publishAsset";
