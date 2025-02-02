@@ -549,9 +549,10 @@ export class TwitterInteractionClient {
       tokenUrl = `https://testnet.suivision.xyz/coin/${coinType}`;
 
       mintedTemplate = `
-      ${symbol} (${asset_name})
-      ${tokenUrl}
-      `;
+This joke has been published as an token on the Sui blockchain!
+${symbol} (${asset_name})
+${tokenUrl}
+`;
 
       elizaLogger.log("New asset published!", result);
       character = jokepapaCharacter;
