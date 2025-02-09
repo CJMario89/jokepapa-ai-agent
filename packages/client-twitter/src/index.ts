@@ -3,7 +3,6 @@ import { ClientBase } from "./base.ts";
 import { validateTwitterConfig, TwitterConfig } from "./environment.ts";
 import { TwitterInteractionClient } from "./interactions.ts";
 import { TwitterPostClient } from "./post.ts";
-import { TwitterSearchClient } from "./search.ts";
 import { TwitterSpaceClient } from "./spaces.ts";
 
 /**
@@ -17,7 +16,6 @@ import { TwitterSpaceClient } from "./spaces.ts";
 class TwitterManager {
   client: ClientBase;
   post: TwitterPostClient;
-  search: TwitterSearchClient;
   interaction: TwitterInteractionClient;
   space?: TwitterSpaceClient;
 
@@ -35,7 +33,6 @@ class TwitterManager {
       elizaLogger.warn("2. burns your rate limit");
       elizaLogger.warn("3. can get your account banned");
       elizaLogger.warn("use at your own risk");
-      this.search = new TwitterSearchClient(this.client, runtime);
     }
 
     // Mentions and interactions

@@ -497,3 +497,24 @@ export const getWalrus = async ({ id }: { id: string }) => {
 export function getWalrusDisplayUrl(blobId?: string) {
   return `${aggregators[0]}/v1/blobs/${blobId}`;
 }
+
+export function cosineSimilarity(vecA: number[], vecB: number[]) {
+  if (vecA.length !== vecB.length) {
+    throw new Error("Vectors must be of the same length");
+  }
+
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] ** 2;
+    normB += vecB[i] ** 2;
+  }
+
+  normA = Math.sqrt(normA);
+  normB = Math.sqrt(normB);
+
+  return normA && normB ? dotProduct / (normA * normB) : 0; // Avoid division by zero
+}

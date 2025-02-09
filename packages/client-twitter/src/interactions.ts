@@ -20,19 +20,25 @@ import {
   Clients,
   ModelProviderName,
   getModel,
+  embed,
 } from "@elizaos/core";
 import { ClientBase } from "./base";
 import {
   buildConversationThread,
+  cosineSimilarity,
   getWalrusDisplayUrl,
   postWalrus,
   sendTweet,
   wait,
 } from "./utils.ts";
-import { assetTemplate, scoreTemplate, textTemplate } from "./template.ts";
+import {
+  assetTemplate,
+  scoreTemplate,
+  similarityTemplate,
+} from "./template.ts";
 import { publishNewAsset } from "meme-coin-launchpad";
 import OpenAI from "openai";
-import { jokepapaCharacter, jokepapaCharacter2 } from "character";
+import sharp from "sharp";
 
 export const twitterMessageHandlerTemplate =
   `
@@ -103,6 +109,7 @@ Thread of Tweets You Are Replying To:
 # INSTRUCTIONS: Respond with [RESPOND] if {{agentName}} should respond, or [IGNORE] if {{agentName}} should not respond to the last message and [STOP] if {{agentName}} should stop participating in the conversation.
 ` + shouldRespondFooter;
 
+const wait429 = (ms = 1000) => new Promise((r) => setTimeout(r, ms));
 export class TwitterInteractionClient {
   client: ClientBase;
   runtime: IAgentRuntime;
@@ -141,12 +148,12 @@ export class TwitterInteractionClient {
       // Check for mentions
       const mentionCandidates = (
         await this.client.fetchSearchTweets(
-          `@${twitterUsername} -is:quote -is:retweet -is:reply`,
-          20,
+          `@${twitterUsername}`,
+          40,
           SearchMode.Latest
         )
       ).tweets;
-
+      elizaLogger.log(twitterUsername, "twitterUsername");
       elizaLogger.log(
         "Completed checking mentioned tweets:",
         mentionCandidates.length
@@ -317,6 +324,7 @@ export class TwitterInteractionClient {
       await this.client.cacheIsProcessingTweet(false);
       elizaLogger.log("Finished checking Twitter interactions");
     } catch (error) {
+      await this.client.cacheIsProcessingTweet(false);
       elizaLogger.error("Error handling Twitter interactions:", error);
     }
   }
@@ -330,6 +338,35 @@ export class TwitterInteractionClient {
     message: Memory;
     thread: Tweet[];
   }) {
+    elizaLogger.log(
+      JSON.parse(
+        JSON.stringify({
+          id:
+            "asset" +
+            stringToUuid(tweet.id + "-" + this.runtime.agentId).slice(5),
+          type: "asset",
+          content: {
+            text: "",
+            symbol: "",
+            assetName: "",
+            tweetId: "",
+            mintPrice: 0,
+            iconUrl: " ",
+            description: "",
+            posterAddress: "",
+            tokenUrl: "",
+          },
+          embedding: [],
+          roomId: stringToUuid(
+            tweet.conversationId + "-" + this.runtime.agentId
+          ),
+          userId: stringToUuid(tweet.userId as string),
+          agentId: this.runtime.agentId,
+          unique: 1,
+        })
+      )
+    );
+
     if (tweet.userId === this.client.profile.id) {
       // console.log("skipping tweet from bot itself", tweet.id);
       // Skip processing if the tweet is from the bot itself
@@ -342,14 +379,14 @@ export class TwitterInteractionClient {
     }
 
     elizaLogger.log("Processing Tweet: ", tweet.id);
-    const formatTweet = (tweet: Tweet) => {
-      return `  ID: ${tweet.id}
-  From: ${tweet.name} (@${tweet.username})
-  Text: ${tweet.text}`;
-    };
-    const currentPost = formatTweet(tweet);
+    //   const formatTweet = (tweet: Tweet) => {
+    //     return `  ID: ${tweet.id}
+    // From: ${tweet.name} (@${tweet.username})
+    // Text: ${tweet.text}`;
+    //   };
+    //   const currentPost = formatTweet(tweet);
 
-    elizaLogger.log("Current Post: ", currentPost);
+    //   elizaLogger.log("Current Post: ", currentPost);
 
     const formattedConversation = thread
       .map(
@@ -367,240 +404,291 @@ export class TwitterInteractionClient {
 
     elizaLogger.log("formattedConversation: ", formattedConversation);
 
+    const addressRegex = /0x[a-fA-F0-9]{64}/;
+    const posterAddress = tweet.text.match(addressRegex)?.[0];
+    const tweetWithoutAddress = tweet.text.replace(addressRegex, "").trim();
+    const mentionRegex = `@${this.client.twitterConfig.TWITTER_USERNAME}`;
+    elizaLogger.log(mentionRegex, "mentionRegex");
+    elizaLogger.log(tweetWithoutAddress, "tweetWithoutAddress");
+    elizaLogger.log(
+      tweetWithoutAddress.replace(mentionRegex, "").trim(),
+      "tweetWithoutMentionAndAddress"
+    );
+    const tweetWithoutMentionAndAddress = tweetWithoutAddress
+      .replace(mentionRegex, "")
+      .trim();
+
+    const embedding = await embed(this.runtime, tweetWithoutMentionAndAddress);
+
     let state = await this.runtime.composeState(message, {
       twitterClient: this.client.twitterClient,
       twitterUserName: this.client.twitterConfig.TWITTER_USERNAME,
-      currentPost,
+      currentPost: tweetWithoutMentionAndAddress,
       formattedConversation,
+      embedding,
     });
 
     //// #### Save the tweet as a memory
     // check if the tweet exists, save if it doesn't
     const tweetId = stringToUuid(tweet.id + "-" + this.runtime.agentId);
-    const tweetExists = await this.runtime.messageManager.getMemoryById(
-      tweetId
-    );
-
-    if (!tweetExists) {
-      elizaLogger.log("tweet does not exist, saving");
-      const userIdUUID = stringToUuid(tweet.userId as string);
-      const roomId = stringToUuid(tweet.conversationId);
-
-      const message = {
-        id: tweetId,
-        agentId: this.runtime.agentId,
-        content: {
-          text: tweet.text,
-          url: tweet.permanentUrl,
-          inReplyTo: tweet.inReplyToStatusId
-            ? stringToUuid(tweet.inReplyToStatusId + "-" + this.runtime.agentId)
-            : undefined,
-        },
-        userId: userIdUUID,
-        roomId,
-        createdAt: tweet.timestamp * 1000,
-      };
-      this.client.saveRequestMessage(message, state);
-    }
+    elizaLogger.log("Checking if tweet exists", tweetId);
 
     //// Should Respond Logic
     // // get usernames into str
     // const validTargetUsersStr =
     //   this.client.twitterConfig.TWITTER_TARGET_USERS.join(",");
 
-    const scoreContext = composeContext({
-      state,
-      template: scoreTemplate,
-    });
+    elizaLogger.log("Tweet without ", tweetWithoutMentionAndAddress);
 
-    let score: number | string;
-    let comment = "";
-    let address = "";
-    let times = 0;
-    while (isNaN(Number(score)) && times < 3) {
-      try {
-        const response = await generateText({
-          runtime: this.runtime,
-          context: scoreContext,
-          modelClass: ModelClass.LARGE,
-        });
-        elizaLogger.log("Response: ", response);
-        const result = JSON.parse(response);
-        score = result.score;
-        comment = result.comment;
-        address = result.address;
-        elizaLogger.log("score: ", score);
-      } catch (e) {
-        elizaLogger.error("Error generating score: ", e);
-      }
-      times++;
-    }
+    const similarMemories =
+      (await this.searchMemoriesByEmbedding(embedding)) || [];
+    const maxSimilarityPost = similarMemories.reduce((prev, current) =>
+      prev.similarity > current.similarity ? prev : current
+    );
 
-    if (times >= 3) {
-      elizaLogger.error("Failed to generate score");
-      return { text: "Failed to generate score", action: "IGNORE" };
-    }
-
-    // // Promise<"RESPOND" | "IGNORE" | "STOP" | null> {
-    // if (score !== "RESPOND") {
-    //   elizaLogger.log("Not responding to message");
-    //   return { text: "Response Decision:", action: shouldRespond };
-    // }
-
-    let character: Character | undefined;
+    let response;
     let mintedTemplate;
+    let shouldPublish;
     let tokenUrl;
+    let mintPool;
     let iconUrl;
     let symbol;
     let asset_name;
     let description;
     let iconPrompt;
-    const shouldPublish = Number(score) > 7 && Boolean(address);
-    if (shouldPublish) {
-      const assetContext = composeContext({
-        state,
-        template: assetTemplate,
-      });
+    let mintPrice;
+    let context;
+    const stringId = stringToUuid(tweet.id + "-" + this.runtime.agentId);
 
+    if (Number(maxSimilarityPost.similarity ?? 0) > 0.9) {
+      elizaLogger.log("Found similar post", maxSimilarityPost);
+      context = composeContext({
+        state: {
+          ...state,
+          similarPost: maxSimilarityPost.text,
+        },
+        template: similarityTemplate,
+      });
+      const text = await generateText({
+        runtime: this.runtime,
+        context,
+        modelClass: ModelClass.LARGE,
+      });
+      response = {
+        text,
+        action: "NONE",
+        inReplyTo: stringId,
+      };
+    } else {
+      const scoreContext = composeContext({
+        state,
+        template: scoreTemplate,
+      });
+      context = scoreContext;
+      let score: number | string;
+      let comment = "";
       let times = 0;
-      let imageBase64;
-      while (!Boolean(symbol) && times < 3) {
+      while (isNaN(Number(score)) && times < 3) {
         try {
+          await wait429(1000);
           const response = await generateText({
             runtime: this.runtime,
-            context: assetContext,
+            context: scoreContext,
             modelClass: ModelClass.LARGE,
           });
-          elizaLogger.log("Asset Response: ", response);
+          elizaLogger.log("Response: ", response);
           const result = JSON.parse(response);
-          symbol = result.symbol;
-          asset_name = result.asset_name;
-          description = result.description;
-          iconPrompt = result.iconPrompt;
-
-          imageBase64 = await this.generateImage({
-            prompt: `logo for ${iconPrompt}`,
-            width: 512,
-            height: 512,
-            count: 1,
-          });
+          score = result.score;
+          comment = result.comment;
+          elizaLogger.log("score: ", score);
         } catch (e) {
-          elizaLogger.error("Error generating asset or image: ", e);
+          elizaLogger.error("Error generating score: ", e);
         }
         times++;
       }
 
-      elizaLogger.log("metadata: ", {
-        symbol,
-        asset_name,
-        description,
-        iconPrompt,
-      });
+      if (times >= 3) {
+        elizaLogger.error("Failed to generate score");
+        return { text: "Failed to generate score", action: "IGNORE" };
+      }
 
-      elizaLogger.log(
-        "Generated Image URL: ",
-        imageBase64.data[0]?.slice(0, 100)
-      );
-      // walrus
+      // // Promise<"RESPOND" | "IGNORE" | "STOP" | null> {
+      // if (score !== "RESPOND") {
+      //   elizaLogger.log("Not responding to message");
+      //   return { text: "Response Decision:", action: shouldRespond };
+      // }
 
-      const base64Data = imageBase64.data[0].replace(
-        /^data:image\/\w+;base64,/,
-        ""
-      );
+      shouldPublish = Number(score) > 7 && Boolean(posterAddress);
+      if (shouldPublish) {
+        const assetContext = composeContext({
+          state,
+          template: assetTemplate,
+        });
+        let times = 0;
+        let imageBase64;
+        while (!Boolean(symbol) && times < 5) {
+          try {
+            await wait429(1000);
+            const response = await generateText({
+              runtime: this.runtime,
+              context: assetContext,
+              modelClass: ModelClass.LARGE,
+            });
+            const responseText = response.replace(/`/g, "").replace("json", "");
+            elizaLogger.log("Asset Response: ", responseText);
+            const result = JSON.parse(responseText);
+            elizaLogger.log("Asset Response: ", result);
+            symbol = result.symbol;
+            asset_name = result.asset_name;
+            description = result.description;
+            iconPrompt = result.iconPrompt;
+            mintPrice = result.mintPrice;
 
-      const buffer = Buffer.from(base64Data, "base64");
+            imageBase64 = await this.generateImage({
+              prompt: `logo for ${iconPrompt}`,
+              width: 512,
+              height: 512,
+              count: 1,
+            });
+          } catch (e) {
+            elizaLogger.error("Error generating asset or image: ", e);
+          }
+          times++;
+        }
+        if (!Boolean(symbol)) {
+          throw new Error("Failed to generate asset");
+        }
 
-      const walrusResponse = await postWalrus({
-        content: buffer,
-        type: "image/png",
-        query: "epochs=5",
-      });
+        elizaLogger.log("metadata: ", {
+          symbol,
+          asset_name,
+          description,
+          iconPrompt,
+        });
 
-      const blobId =
-        walrusResponse?.alreadyCertified?.blobId ||
-        walrusResponse?.newlyCreated?.blobObject?.blobId;
+        elizaLogger.log(
+          "Generated Image URL: ",
+          imageBase64.data[0]?.slice(0, 100)
+        );
+        // walrus
 
-      elizaLogger.log("Walrus Response: ", walrusResponse);
+        const base64Data = imageBase64.data[0].replace(
+          /^data:image\/\w+;base64,/,
+          ""
+        );
 
-      const moduleName = symbol.toLowerCase();
-      const totalSupply = 1000000000000;
-      const decimals = 9;
-      iconUrl = getWalrusDisplayUrl(blobId);
-      const mint_price = 10000;
-      const owner_owned_amount = 100000;
+        const buffer = Buffer.from(base64Data, "base64");
 
-      const result = await publishNewAsset(
-        moduleName, //moduleName
-        totalSupply.toString(), //total supply
-        decimals.toString(), //decimals
-        symbol, //symbol
-        asset_name, //asset name
-        description, //description
-        iconUrl, //iconUrl
-        mint_price.toString(), //mint price
-        address, //owner
-        owner_owned_amount.toString() //owner owned amount
-      );
+        // const buffer = await sharp(largeBuffer)
+        //   .resize(512, 512, {
+        //     position: "center",
+        //   })
+        //   .toBuffer();
 
-      const coinType = result?.balanceChanges?.find(
-        (c) => c.coinType !== "0x2::sui::SUI"
-      )?.coinType;
+        // save image to image.png
+        fs.writeFileSync("image.png", buffer);
 
-      tokenUrl = `https://testnet.suivision.xyz/coin/${coinType}`;
+        const walrusResponse = await postWalrus({
+          content: buffer,
+          type: "image/png",
+          query: "epochs=5",
+        });
 
-      mintedTemplate = `
+        const blobId =
+          walrusResponse?.alreadyCertified?.blobId ||
+          walrusResponse?.newlyCreated?.blobObject?.blobId;
+
+        elizaLogger.log("Walrus Response: ", walrusResponse);
+
+        const moduleName = symbol.toLowerCase();
+        const totalSupply = 100000000000; // 100 billion
+        const decimals = 2;
+        iconUrl = getWalrusDisplayUrl(blobId);
+        const owner_owned_amount = 1000000000; //0.1% of total supply
+        elizaLogger.log(
+          "Params",
+          moduleName, //moduleName
+          totalSupply.toString(), //total supply
+          decimals.toString(), //decimals
+          symbol, //symbol
+          asset_name, //asset name
+          description, //description
+          iconUrl, //iconUrl
+          (Number(mintPrice) * Math.pow(10, 7)).toString(), //mint price sui decimal / decimals
+          posterAddress, //owner
+          owner_owned_amount.toString() //owner owned amount
+        );
+        const result = await publishNewAsset(
+          moduleName, //moduleName
+          totalSupply.toString(), //total supply
+          decimals.toString(), //decimals
+          symbol, //symbol
+          asset_name, //asset name
+          description, //description
+          iconUrl, //iconUrl
+          (Number(mintPrice) * Math.pow(10, 7)).toString(), //mint price sui decimal / decimals
+          posterAddress, //owner
+          owner_owned_amount.toString() //owner owned amount
+        );
+        elizaLogger.log("Publish Asset Result: ", result);
+        const coinType = result?.balanceChanges?.find(
+          (c) => c.coinType !== "0x2::sui::SUI"
+        )?.coinType;
+
+        mintPool = result?.objectChanges?.find((c) => {
+          if (!c.objectType) return false;
+          const splitObjectType = c.objectType?.split("::");
+          return splitObjectType?.[splitObjectType?.length - 1] === "MintPool";
+        })?.objectId;
+
+        tokenUrl = `https://testnet.suivision.xyz/coin/${coinType}`;
+
+        mintedTemplate = `
 This joke has been published as an token on the Sui blockchain!
 ${symbol} (${asset_name})
 ${tokenUrl}
 `;
 
-      elizaLogger.log("New asset published!", result);
-      character = jokepapaCharacter;
-    }
+        elizaLogger.log("New asset published!", result);
+      }
 
-    if (Number(score) < 0) {
-      character = jokepapaCharacter2;
-    }
+      //save for mint website
 
-    if (Number(score) <= 7) {
-      character = jokepapaCharacter2;
-    }
+      if (shouldPublish && mintPool) {
+        await this.savePublishedAsset({
+          id:
+            "asset" +
+            stringToUuid(tweet.id + "-" + this.runtime.agentId).slice(5),
+          type: "asset",
+          content: {
+            text: tweetWithoutMentionAndAddress,
+            symbol,
+            assetName: asset_name,
+            tweetId: tweet.id,
+            mintPrice,
+            iconUrl,
+            description,
+            posterAddress,
+            tokenUrl,
+            mintPool,
+          },
+          roomId: stringToUuid(
+            tweet.conversationId + "-" + this.runtime.agentId
+          ),
+          userId: stringToUuid(tweet.userId as string),
+          agentId: this.runtime.agentId,
+          unique: 1,
+        });
+      }
 
-    const context = composeContext({
-      state: {
-        ...state,
-        //use different character
-        bio: Array.isArray(character?.bio)
-          ? character?.bio.join(" ")
-          : character?.bio,
-        lore: Array.isArray(character?.lore)
-          ? character?.lore.join(" ")
-          : character?.lore,
-        topics: Array.isArray(character?.topics)
-          ? character?.topics.join(" ")
-          : character?.topics,
-        knowledge: Array.isArray(character?.knowledge)
-          ? character?.knowledge.join(" ")
-          : character?.knowledge,
-        score: Number(score),
-        comment,
-      },
-      template: textTemplate,
-    });
+      response = {
+        text: comment,
+        action: "NONE",
+        inReplyTo: stringId,
+      };
+    }
 
     const removeQuotes = (str: string) => str.replace(/^['"](.*)['"]$/, "$1");
-
-    const stringId = stringToUuid(tweet.id + "-" + this.runtime.agentId);
-
-    const response = {
-      text: `${await generateText({
-        runtime: this.runtime,
-        context,
-        modelClass: ModelClass.LARGE,
-      })}`,
-      action: "NONE",
-      inReplyTo: stringId,
-    };
 
     response.text = removeQuotes(response.text);
     elizaLogger.log("Last Response: ", response);
@@ -627,6 +715,32 @@ ${tokenUrl}
     // response.inReplyTo = stringId;
 
     // response.text = removeQuotes(response.text);
+
+    const tweetExists = await this.runtime.messageManager.getMemoryById(
+      tweetId
+    );
+
+    if (!tweetExists) {
+      elizaLogger.log("tweet does not exist, saving");
+      const userIdUUID = stringToUuid(tweet.userId as string);
+      const roomId = stringToUuid(tweet.conversationId);
+
+      const message = {
+        id: tweetId,
+        agentId: this.runtime.agentId,
+        content: {
+          text: tweetWithoutMentionAndAddress,
+          url: tweet.permanentUrl,
+          inReplyTo: tweet.inReplyToStatusId
+            ? stringToUuid(tweet.inReplyToStatusId + "-" + this.runtime.agentId)
+            : undefined,
+        },
+        userId: userIdUUID,
+        roomId,
+        createdAt: tweet.timestamp * 1000,
+      };
+      await this.client.saveRequestMessage(message, state);
+    }
 
     // #### Save the response as a memory
     if (response.text) {
@@ -666,26 +780,26 @@ ${tokenUrl}
 
         state = (await this.runtime.updateRecentMessageState(state)) as State;
 
-        for (const responseMessage of responseMessages) {
-          if (
-            responseMessage === responseMessages[responseMessages.length - 1]
-          ) {
-            responseMessage.content.action = response.action;
-          } else {
-            responseMessage.content.action = "CONTINUE";
-          }
-          //// Save the response message
-          await this.runtime.messageManager.createMemory(responseMessage);
-        }
+        // for (const responseMessage of responseMessages) {
+        //   if (
+        //     responseMessage === responseMessages[responseMessages.length - 1]
+        //   ) {
+        //     responseMessage.content.action = response.action;
+        //   } else {
+        //     responseMessage.content.action = "CONTINUE";
+        //   }
+        //   //// Save the response message
+        //   // await this.runtime.messageManager.createMemory(responseMessage);
+        // }
+        elizaLogger.log("Response sent", responseMessages);
+        // await this.runtime.processActions(
+        //   message,
+        //   responseMessages,
+        //   state,
+        //   callback
+        // );
 
-        await this.runtime.processActions(
-          message,
-          responseMessages,
-          state,
-          callback
-        );
-
-        const responseInfo = `Context:\n\n${context}\n\nSelected Post: ${tweet.id} - ${tweet.username}: ${tweet.text}\nAgent's Output:\n${response.text}`;
+        const responseInfo = `Context:\n\n${context}\n\nSelected Post: ${tweet.id} - ${tweet.username}: ${tweetWithoutMentionAndAddress}\nAgent's Output:\n${response.text}`;
 
         await this.runtime.cacheManager.set(
           `twitter/tweet_generation_${tweet.id}.txt`,
@@ -865,5 +979,82 @@ ${tokenUrl}
       (image) => `data:image/png;base64,${image.b64_json}`
     );
     return { success: true, data: base64s };
+  }
+
+  private async searchMemoriesByEmbedding(embedding: number[]): Promise<
+    {
+      text: string;
+      similarity: number;
+    }[]
+  > {
+    const db = this.runtime.databaseAdapter.db;
+    const memories = await db.prepare("SELECT * FROM memories").all();
+    const similarities = memories.map((memory) => {
+      const memoryEmbedding: number[] = Array.from(
+        new Float32Array(memory.embedding.buffer)
+      );
+
+      if (embedding.length !== memoryEmbedding.length) {
+        return {
+          text: memory.text,
+          similarity: 0,
+        };
+      }
+
+      elizaLogger.log("text", memory.content);
+      elizaLogger.log(JSON.parse(memory.content).text);
+      elizaLogger.log(
+        "similarity",
+        cosineSimilarity(embedding, memoryEmbedding)
+      );
+      return {
+        text: memory.content.text,
+        similarity: cosineSimilarity(embedding, memoryEmbedding),
+      };
+    });
+
+    return similarities;
+  }
+
+  private async savePublishedAsset(params: {
+    id: string;
+    type: string;
+    content: {
+      text: string;
+      symbol: string;
+      assetName: string;
+      tweetId: string;
+      mintPrice: number;
+      iconUrl: string;
+      description: string;
+      posterAddress: string;
+      tokenUrl: string;
+      mintPool: string;
+    };
+    userId: string;
+    roomId: string;
+    agentId: string;
+    unique: number;
+  }) {
+    const db = this.runtime.databaseAdapter.db;
+    elizaLogger.log("Saving asset", params);
+    try {
+      await db
+        .prepare(
+          `INSERT INTO memories (id, type, createdAt, content, embedding, userId, roomId, agentId, "unique") VALUES (?, ?, ?, ?, X'', ?, ?, ?, ?)`
+        )
+        .run(
+          params.id,
+          "asset",
+          Date.now(),
+          JSON.stringify(params.content),
+          params.userId,
+          params.roomId,
+          params.agentId,
+          params.unique
+        );
+    } catch (e) {
+      elizaLogger.error("Error saving asset: ", e);
+    }
   }
 }

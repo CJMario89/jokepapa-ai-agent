@@ -8,6 +8,7 @@ import {
   getEmbeddingZeroVector,
   elizaLogger,
   stringToUuid,
+  embed,
 } from "@elizaos/core";
 import {
   QueryTweetsResponse,
@@ -642,16 +643,21 @@ export class ClientBase extends EventEmitter {
       ) {
         elizaLogger.debug("Message already saved", recentMessage[0].id);
       } else {
-        await this.runtime.messageManager.createMemory({
-          ...message,
-          embedding: getEmbeddingZeroVector(),
-        });
+        const embedding = await embed(this.runtime, message.content.text);
+
+        await this.runtime.databaseAdapter.createMemory(
+          {
+            ...message,
+            embedding,
+          },
+          "memories"
+        );
       }
 
-      await this.runtime.evaluate(message, {
-        ...state,
-        twitterClient: this.twitterClient,
-      });
+      // await this.runtime.evaluate(message, {
+      //   ...state,
+      //   twitterClient: this.twitterClient,
+      // });
     }
   }
 

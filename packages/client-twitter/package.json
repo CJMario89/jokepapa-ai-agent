@@ -24,8 +24,9 @@
     "character": "file:../character",
     "glob": "11.0.0",
     "meme-coin-launchpad": "file:../meme-coin-launchpad",
-    "zod": "3.23.8",
-    "openai": "4.73.0"
+    "openai": "4.73.0",
+    "sharp": "^0.33.5",
+    "zod": "3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",
