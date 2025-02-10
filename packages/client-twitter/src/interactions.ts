@@ -351,7 +351,7 @@ export class TwitterInteractionClient {
             assetName: "",
             tweetId: "",
             mintPrice: 0,
-            iconUrl: " ",
+            iconUrl: "",
             description: "",
             posterAddress: "",
             tokenUrl: "",
@@ -368,7 +368,6 @@ export class TwitterInteractionClient {
     );
 
     if (tweet.userId === this.client.profile.id) {
-      // console.log("skipping tweet from bot itself", tweet.id);
       // Skip processing if the tweet is from the bot itself
       return;
     }
@@ -379,14 +378,6 @@ export class TwitterInteractionClient {
     }
 
     elizaLogger.log("Processing Tweet: ", tweet.id);
-    //   const formatTweet = (tweet: Tweet) => {
-    //     return `  ID: ${tweet.id}
-    // From: ${tweet.name} (@${tweet.username})
-    // Text: ${tweet.text}`;
-    //   };
-    //   const currentPost = formatTweet(tweet);
-
-    //   elizaLogger.log("Current Post: ", currentPost);
 
     const formattedConversation = thread
       .map(
@@ -408,12 +399,7 @@ export class TwitterInteractionClient {
     const posterAddress = tweet.text.match(addressRegex)?.[0];
     const tweetWithoutAddress = tweet.text.replace(addressRegex, "").trim();
     const mentionRegex = `@${this.client.twitterConfig.TWITTER_USERNAME}`;
-    elizaLogger.log(mentionRegex, "mentionRegex");
-    elizaLogger.log(tweetWithoutAddress, "tweetWithoutAddress");
-    elizaLogger.log(
-      tweetWithoutAddress.replace(mentionRegex, "").trim(),
-      "tweetWithoutMentionAndAddress"
-    );
+
     const tweetWithoutMentionAndAddress = tweetWithoutAddress
       .replace(mentionRegex, "")
       .trim();
@@ -432,11 +418,6 @@ export class TwitterInteractionClient {
     // check if the tweet exists, save if it doesn't
     const tweetId = stringToUuid(tweet.id + "-" + this.runtime.agentId);
     elizaLogger.log("Checking if tweet exists", tweetId);
-
-    //// Should Respond Logic
-    // // get usernames into str
-    // const validTargetUsersStr =
-    //   this.client.twitterConfig.TWITTER_TARGET_USERS.join(",");
 
     elizaLogger.log("Tweet without ", tweetWithoutMentionAndAddress);
 
@@ -511,12 +492,6 @@ export class TwitterInteractionClient {
         elizaLogger.error("Failed to generate score");
         return { text: "Failed to generate score", action: "IGNORE" };
       }
-
-      // // Promise<"RESPOND" | "IGNORE" | "STOP" | null> {
-      // if (score !== "RESPOND") {
-      //   elizaLogger.log("Not responding to message");
-      //   return { text: "Response Decision:", action: shouldRespond };
-      // }
 
       shouldPublish = Number(score) > 7 && Boolean(posterAddress);
       if (shouldPublish) {
@@ -648,8 +623,6 @@ This joke has been published as an token on the Sui blockchain!
 ${symbol} (${asset_name})
 ${tokenUrl}
 `;
-
-        elizaLogger.log("New asset published!", result);
       }
 
       //save for mint website
@@ -692,29 +665,6 @@ ${tokenUrl}
 
     response.text = removeQuotes(response.text);
     elizaLogger.log("Last Response: ", response);
-    // const context = composeContext({
-    //   state,
-    //   template:
-    //     this.runtime.character.templates?.twitterMessageHandlerTemplate ||
-    //     this.runtime.character?.templates?.messageHandlerTemplate ||
-    //     twitterMessageHandlerTemplate,
-    // });
-
-    // // elizaLogger.log("Interactions prompt:\n" + context);
-
-    // const response = await generateMessageResponse({
-    //   runtime: this.runtime,
-    //   context,
-    //   modelClass: ModelClass.LARGE,
-    // });
-
-    // const removeQuotes = (str: string) => str.replace(/^['"](.*)['"]$/, "$1");
-
-    // const stringId = stringToUuid(tweet.id + "-" + this.runtime.agentId);
-
-    // response.inReplyTo = stringId;
-
-    // response.text = removeQuotes(response.text);
 
     const tweetExists = await this.runtime.messageManager.getMemoryById(
       tweetId
@@ -779,25 +729,6 @@ ${tokenUrl}
         }
 
         state = (await this.runtime.updateRecentMessageState(state)) as State;
-
-        // for (const responseMessage of responseMessages) {
-        //   if (
-        //     responseMessage === responseMessages[responseMessages.length - 1]
-        //   ) {
-        //     responseMessage.content.action = response.action;
-        //   } else {
-        //     responseMessage.content.action = "CONTINUE";
-        //   }
-        //   //// Save the response message
-        //   // await this.runtime.messageManager.createMemory(responseMessage);
-        // }
-        elizaLogger.log("Response sent", responseMessages);
-        // await this.runtime.processActions(
-        //   message,
-        //   responseMessages,
-        //   state,
-        //   callback
-        // );
 
         const responseInfo = `Context:\n\n${context}\n\nSelected Post: ${tweet.id} - ${tweet.username}: ${tweetWithoutMentionAndAddress}\nAgent's Output:\n${response.text}`;
 
@@ -1001,12 +932,6 @@ ${tokenUrl}
         };
       }
 
-      elizaLogger.log("text", memory.content);
-      elizaLogger.log(JSON.parse(memory.content).text);
-      elizaLogger.log(
-        "similarity",
-        cosineSimilarity(embedding, memoryEmbedding)
-      );
       return {
         text: memory.content.text,
         similarity: cosineSimilarity(embedding, memoryEmbedding),
